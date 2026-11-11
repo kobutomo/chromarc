@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <title>Chromarc</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <main>
+      <section id="bookmarks"></section>
+      <section id="meeting"></section>
+      <div class="divider">
+        <span class="line"></span>
+        <button id="clear-tabs" title="表示中のタブ以外を閉じる(アーカイブ済みから復元できます)">↓ クリア</button>
+      </div>
+      <button id="new-tab" class="row ghost"><span class="icon">+</span><span class="title">新しいタブ</span></button>
+      <section id="tabs"></section>
+    </main>
+    <footer>
+      <details id="archive">
+        <summary>
+          <span>アーカイブ済み (<span id="archive-count">0</span>)</span>
+          <button id="archive-clear" title="アーカイブをすべて消去">消去</button>
+        </summary>
+        <div id="archive-list"></div>
+      </details>
+      <button id="open-options" class="row ghost"><span class="icon">⚙</span><span class="title">設定</span></button>
+    </footer>
+    <script src="shared.js"></script>
+    <script src="sidepanel.js"></script>
+  </body>
+</html>

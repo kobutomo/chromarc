@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "Chromarc",
+  "version": "0.1.0",
+  "description": "Arc 風のサイドバー: ブックマークとタブの一覧表示、タブ名の変更、非アクティブなタブの自動アーカイブ、文字サイズの変更",
+  "minimum_chrome_version": "121",
+  "permissions": [
+    "tabs",
+    "bookmarks",
+    "storage",
+    "alarms",
+    "sidePanel",
+    "scripting",
+    "contextMenus",
+    "favicon"
+  ],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Chromarc サイドバーを開く"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Alt+S"
+      }
+    }
+  }
+}
