@@ -46,6 +46,14 @@
     saveSettings({ fontSize: Number(fontSize.value) });
   });
 
+  // GitHub のレビュー依頼
+  const reviewsEnabled = $('#reviews-enabled');
+  const githubToken = $('#github-token');
+  reviewsEnabled.checked = settings.reviewsEnabled;
+  githubToken.value = settings.githubToken;
+  reviewsEnabled.addEventListener('change', () => saveSettings({ reviewsEnabled: reviewsEnabled.checked }));
+  githubToken.addEventListener('change', () => saveSettings({ githubToken: githubToken.value.trim() }));
+
   // ブックマークフォルダ
   folder.append(new Option('ブックマークバー(既定)', ''));
   const walk = (nodes, depth) => {

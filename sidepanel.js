@@ -4,6 +4,8 @@ const els = {
   bookmarks: $('#bookmarks'),
   tabs: $('#tabs'),
   meeting: $('#meeting'),
+  aws: $('#aws'),
+  reviews: $('#reviews'),
   archiveList: $('#archive-list'),
   archiveCount: $('#archive-count'),
 };
@@ -119,10 +121,12 @@ async function render() {
       'openFolders',
       'foldersOpenedAt',
       'folderColors',
+      'awsNames',
+      'prLists',
       'splitBookmarks',
       'favicons',
     ]),
-    chrome.storage.session.get('links'),
+    chrome.storage.session.get(['links', 'awsAccounts']),
     chrome.tabs.query({}),
     chrome.bookmarks.getTree(),
   ]);
@@ -148,6 +152,7 @@ async function render() {
   const splitBookmarks = local.splitBookmarks ?? {};
   const favicons = local.favicons ?? {};
   const folderColors = local.folderColors ?? {};
+  const awsNames = local.awsNames ?? {};
   const linkedTabIds = linkedTabIdSet(links, allTabs);
   // 分割ビューでは片方のタブだけが active になるので、相方が active でも「表示中」とみなす
   const isShown = (tab) =>
@@ -320,7 +325,134 @@ async function render() {
       : []),
   );
 
-  for (const tab of listed.filter((t) => !isMeetingTab(t))) {
+  // AWS コンソールのタブはアカウントごとのグループにまとめる
+  const awsGroups = new Map();
+  for (const tab of listed.filter((t) => awsHostOf(t))) {
+    const account = awsAccountOf(tab, session.awsAccounts ?? {});
+    const key = account?.id ?? '';
+    if (!awsGroups.has(key)) awsGroups.set(key, { account, tabs: [] });
+    const group = awsGroups.get(key);
+    if (account?.alias) group.account = account; // エイリアスが分かっているものを見出しに使う
+    group.tabs.push(tab);
+  }
+  els.aws.replaceChildren(
+    ...[...awsGroups.entries()]
+      .sort(([a], [b]) => (a === '' ? 1 : b === '' ? -1 : a.localeCompare(b))) // アカウント不明は最後
+      .flatMap(([, { account, tabs }]) => {
+        if (!account) {
+          return [h('div', { className: 'section-title', textContent: 'AWS (アカウント不明)' }), ...tabs.map(tabRow)];
+        }
+        // 自分で付けた別名 > AWS 側のエイリアス > アカウント ID の順で見出しにする
+        const name = awsNames[account.id];
+        const label = name ?? (account.alias ? `AWS ${account.alias} (${account.id})` : `AWS ${account.id}`);
+        return [
+          h(
+            'div',
+            {
+              className: 'section-title',
+              title: `AWS ${account.id}\nダブルクリックで別名を変更`,
+              dataset: { kind: 'aws', id: account.id, name: name ?? '' },
+            },
+            h('span', { className: 'title', textContent: label }),
+          ),
+          ...tabs.map(tabRow),
+        ];
+      }),
+  );
+
+  // GitHub の PR 一覧 (レビュー依頼 / アサイン)。開いているタブはこのグループ側に表示する
+  const reviewTabIds = new Set();
+  const prNodes = [];
+  if (settings.reviewsEnabled) {
+    const prLists = local.prLists ?? {};
+    for (const source of PR_SOURCES) {
+      const list = prLists[source.key] ?? {};
+      const items = list.items ?? [];
+      // 開閉状態と色はブックマークのフォルダと同じ場所に保存する (キーは pr: で始まる)
+      const groupKey = `pr:${source.key}`;
+      const collapsed = !openFolders[groupKey];
+      const fetchedAt = list.fetchedAt
+        ? new Date(list.fetchedAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })
+        : '未取得';
+      // ブックマークのフォルダと同じ見た目の行 (グループ > リポジトリ > PR)
+      const indent = (depth) => ({ paddingLeft: `${0.6 + depth * 1.1}em` });
+      const folderRow = (key, label, depth, isCollapsed, tooltip, ...extra) => {
+        const row = h(
+          'div',
+          { className: 'row folder', title: tooltip, style: indent(depth), dataset: { folder: key } },
+          h('span', {
+            className: 'icon',
+            innerHTML: isCollapsed ? FOLDER_ICON.closed : FOLDER_ICON.open,
+            style: folderColors[key] ? { color: folderColors[key] } : {},
+          }),
+          h('span', { className: 'title', textContent: label }),
+          ...extra,
+        );
+        row.addEventListener('click', () => toggleFolder(key));
+        return row;
+      };
+
+      prNodes.push(
+        folderRow(
+          groupKey,
+          `${source.title} (${items.length})`,
+          0,
+          collapsed,
+          `最終更新: ${fetchedAt}`,
+          action('↻', '今すぐ更新', () => chrome.runtime.sendMessage({ type: 'refreshReviews' })),
+        ),
+      );
+      if (list.error) prNodes.push(h('div', { className: 'empty', textContent: list.error }));
+
+      const byRepo = new Map();
+      for (const item of items) {
+        const tab = listed.find(
+          (t) =>
+            !reviewTabIds.has(t.id) &&
+            (t.url === item.url || ['/', '#', '?'].some((sep) => t.url?.startsWith(item.url + sep))),
+        );
+        if (tab) reviewTabIds.add(tab.id);
+        if (!byRepo.has(item.repo)) byRepo.set(item.repo, []);
+        byRepo.get(item.repo).push({ item, tab });
+      }
+      const prRow = ({ item, tab }, depth) => {
+        const row = h(
+          'div',
+          {
+            className: `row bookmark review${tab ? ' open' : ''}${tab?.active ? ' active' : ''}`,
+            title: `${item.repo}#${item.number}\n${item.url}`,
+            style: indent(depth),
+          },
+          favicon(item.url, tab?.favIconUrl ?? 'https://github.githubassets.com/favicons/favicon.svg'),
+          h('span', { className: 'title', textContent: item.title || `#${item.number}` }),
+          tab ? action('×', 'タブを閉じる', () => chrome.tabs.remove(tab.id)) : null,
+        );
+        row.addEventListener('click', () =>
+          tab ? chrome.tabs.update(tab.id, { active: true }) : chrome.tabs.create({ url: item.url, windowId }),
+        );
+        return row;
+      };
+      // 閉じているフォルダは、ブックマークと同じく開いているタブだけを 1 段下に表示する
+      for (const [repo, entries] of [...byRepo.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+        const open = entries.filter((entry) => entry.tab);
+        if (collapsed) {
+          prNodes.push(...open.map((entry) => prRow(entry, 1)));
+          continue;
+        }
+        const repoKey = `${groupKey}/${repo}`;
+        const repoCollapsed = !openFolders[repoKey];
+        prNodes.push(
+          folderRow(repoKey, `${repo} (${entries.length})`, 1, repoCollapsed, repo),
+          ...(repoCollapsed ? open : entries).map((entry) => prRow(entry, 2)),
+        );
+      }
+    }
+  }
+  els.reviews.replaceChildren(...prNodes);
+
+  for (const tab of listed.filter(
+    (t) => !isMeetingTab(t) && !awsHostOf(t) && !reviewTabIds.has(t.id),
+  )) {
     const splitId = splitIdOf(tab);
     const last = groups.at(-1);
     if (splitId !== null && last?.splitId === splitId) last.tabs.push(tab);
@@ -558,6 +690,14 @@ els.bookmarks.addEventListener('contextmenu', async (event) => {
   ]);
 });
 
+// PR グループのフォルダ: 右クリックで色を変更
+els.reviews.addEventListener('contextmenu', (event) => {
+  const row = event.target.closest?.('.row.folder[data-folder]');
+  if (!row) return;
+  event.preventDefault();
+  showMenu(event.clientX, event.clientY, [colorSwatches(row.dataset.folder)]);
+});
+
 document.addEventListener(
   'mousedown',
   (event) => {
@@ -590,7 +730,8 @@ function startRename(row) {
   const span = row.querySelector('.title');
   if (!span || editing) return;
 
-  const initial = span.textContent;
+  // AWS の見出しは、既定の表示 (AWS 1234...) ではなく付けた別名を編集対象にする
+  const initial = kind === 'aws' ? row.dataset.name : span.textContent;
   const input = h('input', { className: 'rename', value: initial, spellcheck: false });
   editing = true;
   row.classList.add('editing');
@@ -608,7 +749,13 @@ function startRename(row) {
     const value = input.value.trim();
     try {
       if (commit && value !== initial) {
-        if (kind === 'tab') {
+        if (kind === 'aws') {
+          // 空にすると別名を消して既定の表示に戻す
+          const { awsNames = {} } = await chrome.storage.local.get('awsNames');
+          if (value) awsNames[id] = value;
+          else delete awsNames[id];
+          await chrome.storage.local.set({ awsNames });
+        } else if (kind === 'tab') {
           // 空にすると「名前なし」のタブになる
           await chrome.runtime.sendMessage({ type: 'rename', tabId: Number(id), name: value });
         } else if (value || !row.classList.contains('folder')) {
@@ -637,7 +784,7 @@ function startRename(row) {
 
 // 1 回目のクリックでタブが切り替わり行が描き直されるため、dblclick イベントではなく
 // クリック回数 (event.detail) でダブルクリックを判定する
-for (const container of [els.bookmarks, els.meeting, els.tabs]) {
+for (const container of [els.bookmarks, els.meeting, els.aws, els.tabs]) {
   container.addEventListener('click', (event) => {
     if (event.detail !== 2) return;
     // 分割ビューの行では、クリックした側 (.half) のタブが対象になる

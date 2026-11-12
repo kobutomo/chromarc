@@ -6,6 +6,8 @@ const DEFAULT_SETTINGS = {
   archiveUnit: 'hours',
   fontSize: 13,
   bookmarkFolderId: null, // null = ブックマークバー
+  reviewsEnabled: true, // GitHub のレビュー依頼を定期的に取得する
+  githubToken: '', // 空ならログイン中のブラウザのセッションでページを取得する
 };
 
 const UNIT_MS = {
@@ -60,6 +62,45 @@ function isMeetingTab(tab) {
     return false;
   }
 }
+
+// AWS コンソールのタブ。サイドバーではアカウントごとのグループにまとめる
+function awsHostOf(tab) {
+  try {
+    const { hostname } = new URL(tab.url ?? '');
+    return hostname === 'console.aws.amazon.com' || hostname.endsWith('.console.aws.amazon.com')
+      ? hostname
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+// タブの AWS アカウント { id, alias }。分からなければ null。
+// マルチセッション有効時の URL (123456789012-xxxx.region.console.aws.amazon.com) を優先し、
+// なければページから読み取った情報 (aws.js が報告したもの) を使う
+function awsAccountOf(tab, reported = {}) {
+  const fromPage = reported[tab.id] ?? null;
+  const fromUrl = awsHostOf(tab)?.match(/^(\d{12})-/)?.[1] ?? null;
+  if (fromUrl) return { id: fromUrl, alias: fromPage?.id === fromUrl ? fromPage.alias : null };
+  return fromPage;
+}
+
+// サイドバーに表示する GitHub の PR 一覧。
+// pageUrl: トークンなしのときに取得するページ / query: トークンありのときの検索条件
+const PR_SOURCES = [
+  {
+    key: 'reviews',
+    title: 'Review Requests',
+    pageUrl: 'https://github.com/pulls/reviews',
+    query: 'is:open is:pr review-requested:@me archived:false',
+  },
+  {
+    key: 'assigned',
+    title: 'Assigned',
+    pageUrl: 'https://github.com/pulls/assigned',
+    query: 'is:open is:pr assignee:@me archived:false',
+  },
+];
 
 async function getSettings() {
   const { settings } = await chrome.storage.local.get('settings');

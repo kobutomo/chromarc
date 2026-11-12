@@ -96,6 +96,22 @@
       <p>選んだフォルダの中身がサイドバー上部に表示されます。</p>
     </fieldset>
 
+    <fieldset>
+      <legend>GitHub のレビュー依頼</legend>
+      <label class="line">
+        <input type="checkbox" id="reviews-enabled" />
+        レビュー依頼が来ている PR と、自分にアサインされた PR をサイドバーに表示する(5 分ごとに更新)
+      </label>
+      <div class="line">
+        <input type="password" id="github-token" placeholder="GitHub トークン(任意)" style="flex: 1" />
+      </div>
+      <p>
+        トークンが空の場合は、ブラウザでログイン中の GitHub のページ(github.com/pulls/reviews と github.com/pulls/assigned)を取得して一覧を作ります。
+        うまく取得できない場合は、repo の読み取り権限を持つトークンを入れると GitHub API で取得します。
+        トークンはこのブラウザの拡張機能ストレージに平文で保存されます。
+      </p>
+    </fieldset>
+
     <script src="shared.js"></script>
     <script src="options.js"></script>
   </body>

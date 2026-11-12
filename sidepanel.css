@@ -407,7 +407,8 @@ details > summary::-webkit-details-marker {
 }
 
 /* Current Meeting (Google Meet のタブ) */
-#meeting:not(:empty) {
+#meeting:not(:empty),
+#aws:not(:empty) {
   margin-top: 8px;
 }
 
@@ -416,4 +417,37 @@ details > summary::-webkit-details-marker {
   color: var(--muted);
   font-size: 0.85em;
   font-weight: 500;
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+}
+
+/* 見出しの右端に置くボタン (更新など) は常に表示する */
+.section-title .title {
+  flex: 1;
+}
+
+.section-title .action {
+  display: inline-block;
+}
+
+/* 開閉できる見出しと、その中のリポジトリ名 */
+.section-title.toggle:hover {
+  color: var(--fg);
+}
+
+.section-title .caret {
+  flex: none;
+  width: 1.1em;
+}
+
+.sub-title {
+  padding: 0.3em 0.6em 0.1em 1.7em;
+  color: var(--muted);
+  font-size: 0.8em;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }

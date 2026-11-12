@@ -57,6 +57,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     return true;
   }
+  if (message?.type === 'awsAccount') {
+    const tabId = sender.tab?.id;
+    if (tabId == null) return;
+    chrome.storage.session.get('awsAccounts').then(({ awsAccounts = {} }) => {
+      const current = awsAccounts[tabId];
+      if (current?.id === message.id && current?.alias === message.alias) return;
+      awsAccounts[tabId] = { id: message.id, alias: message.alias ?? null };
+      return chrome.storage.session.set({ awsAccounts });
+    });
+    return;
+  }
+  if (message?.type === 'refreshReviews') {
+    fetchReviews().then(() => sendResponse({ ok: true }));
+    return true;
+  }
   if (message?.type === 'clear') {
     clearTabs(message.windowId).then(
       () => sendResponse({ ok: true }),
@@ -107,6 +122,12 @@ chrome.tabs.onRemoved.addListener(async (tabId, removeInfo) => {
   if (bookmarkId) {
     delete links[bookmarkId];
     await chrome.storage.session.set({ links });
+  }
+
+  const { awsAccounts = {} } = await chrome.storage.session.get('awsAccounts');
+  if (awsAccounts[tabId]) {
+    delete awsAccounts[tabId];
+    await chrome.storage.session.set({ awsAccounts });
   }
 
   // ウィンドウごと閉じた場合は、再起動時に URL で引き継げるよう残しておく
@@ -171,6 +192,106 @@ chrome.bookmarks.onRemoved.addListener(async (id, removeInfo) => {
   if (staleSplits.length > 0) {
     for (const bookmarkId of staleSplits) delete splitBookmarks[bookmarkId];
     await chrome.storage.local.set({ splitBookmarks });
+  }
+});
+
+// ------------------------------------------------- GitHub のレビュー依頼
+
+const REVIEWS_ALARM = 'reviews';
+
+chrome.alarms.get(REVIEWS_ALARM, (alarm) => {
+  if (!alarm) chrome.alarms.create(REVIEWS_ALARM, { periodInMinutes: 5 });
+});
+
+// トークンがあれば GitHub API で取得する (確実)
+async function fetchPrsFromApi(token, query) {
+  const url = `https://api.github.com/search/issues?per_page=100&q=${encodeURIComponent(query)}`;
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
+  });
+  if (!response.ok) throw new Error(`GitHub API がエラーを返しました (${response.status})`);
+  const { items = [] } = await response.json();
+  return items.map((item) => ({
+    url: item.html_url,
+    title: item.title,
+    repo: item.repository_url?.split('/repos/')[1] ?? '',
+    number: item.number,
+  }));
+}
+
+const decodeEntities = (text) =>
+  text
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(Number(dec)))
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, '&');
+
+// トークンがなければ、ログイン中のセッションでページを取得して PR へのリンクを拾う
+async function fetchPrsFromPage(pageUrl) {
+  const response = await fetch(pageUrl, { credentials: 'include' });
+  if (/^\/(login|session)/.test(new URL(response.url).pathname)) {
+    throw new Error('GitHub にログインしていません');
+  }
+  if (!response.ok) throw new Error(`GitHub のページを取得できませんでした (${response.status})`);
+  const html = await response.text();
+
+  const found = new Map();
+  const add = (owner, repo, number, title) => {
+    const key = `${owner}/${repo}#${number}`;
+    const current = found.get(key);
+    if (current && (current.title || !title)) return;
+    found.set(key, {
+      url: `https://github.com/${owner}/${repo}/pull/${number}`,
+      title: title || '',
+      repo: `${owner}/${repo}`,
+      number: Number(number),
+    });
+  };
+  // リンクとして埋まっている場合はタイトルも取れる
+  const anchor =
+    /<a\b[^>]*href="(?:https:\/\/github\.com)?\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)"[^>]*>([\s\S]*?)<\/a>/g;
+  for (const [, owner, repo, number, inner] of html.matchAll(anchor)) {
+    add(owner, repo, number, decodeEntities(inner.replace(/<[^>]*>/g, '')).replace(/\s+/g, ' ').trim());
+  }
+  // 埋め込みデータなどに URL だけある場合は「owner/repo#番号」で表示する
+  const bare = /github\.com\\?\/([\w.-]+)\\?\/([\w.-]+)\\?\/pull\\?\/(\d+)/g;
+  for (const [, owner, repo, number] of html.matchAll(bare)) add(owner, repo, number, '');
+  return [...found.values()];
+}
+
+async function fetchReviews() {
+  const settings = await getSettings();
+  if (!settings.reviewsEnabled) return;
+  const { prLists = {} } = await chrome.storage.local.get('prLists');
+  await Promise.all(
+    PR_SOURCES.map(async (source) => {
+      let items = prLists[source.key]?.items ?? [];
+      let error = null;
+      try {
+        items = settings.githubToken
+          ? await fetchPrsFromApi(settings.githubToken, source.query)
+          : await fetchPrsFromPage(source.pageUrl);
+      } catch (e) {
+        error = String(e?.message ?? e); // 失敗時は前回の一覧を残す
+      }
+      prLists[source.key] = { items, error, fetchedAt: Date.now() };
+    }),
+  );
+  await chrome.storage.local.set({ prLists });
+}
+
+chrome.runtime.onStartup.addListener(fetchReviews);
+chrome.runtime.onInstalled.addListener(fetchReviews);
+
+// 設定 (有効/無効・トークン) を変えたらすぐ取り直す
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local' || !changes.settings) return;
+  const before = changes.settings.oldValue ?? {};
+  const after = changes.settings.newValue ?? {};
+  if (before.reviewsEnabled !== after.reviewsEnabled || before.githubToken !== after.githubToken) {
+    fetchReviews();
   }
 });
 
@@ -241,4 +362,5 @@ async function clearTabs(windowId) {
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === ALARM) archiveTick();
+  if (alarm.name === REVIEWS_ALARM) fetchReviews();
 });
